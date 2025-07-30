@@ -12,12 +12,14 @@ from inspect import signature
 from functools import wraps
 
 def j2t(x_jax):
-    x_torch = torch_dlpack.from_dlpack(jax_dlpack.to_dlpack(x_jax))
+    # to_dlpack is now deprecated, can pass in directly
+    x_torch = torch_dlpack.from_dlpack(x_jax)
     return x_torch
 
 def t2j(x_torch):
-    x_torch = x_torch.contiguous() # https://github.com/google/jax/issues/8082
-    x_jax = jax_dlpack.from_dlpack(torch_dlpack.to_dlpack(x_torch))
+    # Needs to be detached before DLPack
+    x_torch = x_torch.detach().contiguous() # https://github.com/google/jax/issues/8082
+    x_jax = jax_dlpack.from_dlpack(x_torch)
     return x_jax
 
 def tree_t2j(x_torch):
@@ -34,10 +36,22 @@ def jax2torch(fn):
             def forward(ctx, *args):
                 args = tree_t2j(args)
                 y_, ctx.fun_vjp = jax.vjp(fn, *args)
+                ctx.batch_vjp = jax.vmap(ctx.fun_vjp)
                 return tree_j2t(y_)
 
             @staticmethod
             def backward(ctx, *grad_args):
+                # Check for batched tensor and unwrap
+                batch_args = grad_args if len(grad_args) > 1 else grad_args[0]
+                if torch._C._functorch.is_batchedtensor(batch_args):
+                    level = torch._C._functorch.maybe_get_level(batch_args)
+                    bdim = torch._C._functorch.maybe_get_bdim(batch_args)
+                    unwrap_args = torch._C._functorch.get_unwrapped(batch_args)
+                    grads = ctx.batch_vjp(tree_t2j(unwrap_args))
+                    grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
+                    ret_unwrap = tree_j2t(grads)
+                    return tuple(torch._C._functorch._add_batch_dim(ret, bdim, level) for ret in ret_unwrap)
+                # Normal operation
                 grad_args = tree_t2j(grad_args) if len(grad_args) > 1 else t2j(grad_args[0])
                 grads = ctx.fun_vjp(grad_args)
                 grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
