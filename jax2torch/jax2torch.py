@@ -11,6 +11,10 @@ from jax.tree_util import tree_map
 from inspect import signature
 from functools import wraps
 
+# TODO: figure out how to use UnTypedStorage
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
+
 def j2t(x_jax):
     # to_dlpack is now deprecated, can pass in directly
     x_torch = torch_dlpack.from_dlpack(x_jax)
@@ -19,7 +23,12 @@ def j2t(x_jax):
 def t2j(x_torch):
     # Needs to be detached before DLPack
     x_torch = x_torch.detach().contiguous() # https://github.com/google/jax/issues/8082
-    x_jax = jax_dlpack.from_dlpack(x_torch)
+    # Unwrap Grad-Tracking Tensor: https://github.com/pytorch/pytorch/issues/91810
+    if torch._C._functorch.is_gradtrackingtensor(x_torch):
+        x_unwrap = torch._C._functorch.get_unwrapped(x_torch)
+        x_jax = jnp.array(x_unwrap.storage().tolist()).reshape(x_unwrap.shape)
+    else:
+        x_jax = jax_dlpack.from_dlpack(x_torch)
     return x_jax
 
 def tree_t2j(x_torch):
@@ -33,11 +42,16 @@ def jax2torch(fn):
     def inner(*args, **kwargs):
         class JaxFun(torch.autograd.Function):
             @staticmethod
-            def forward(ctx, *args):
+            def forward(*args):
                 args = tree_t2j(args)
-                y_, ctx.fun_vjp = jax.vjp(fn, *args)
-                ctx.batch_vjp = jax.vmap(ctx.fun_vjp)
+                y_, _ = jax.vjp(fn, *args)
                 return tree_j2t(y_)
+
+            @staticmethod
+            def setup_context(ctx, inputs, _):
+                jaxargs = tree_t2j(inputs)
+                _, ctx.fun_vjp = jax.vjp(fn, *jaxargs)
+                ctx.batch_vjp = jax.vmap(ctx.fun_vjp)
 
             @staticmethod
             def backward(ctx, *grad_args):
