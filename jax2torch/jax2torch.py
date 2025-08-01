@@ -73,7 +73,7 @@ def jax2torch(fn):
                     ctx.fun_vjp = jax.vjp(jax.vmap(fn), *jaxargs)[1]
                     ctx.batch_vjp = ctx.fun_vjp
                     ctx.batch_size = jaxargs[0].shape[0]
-                else:
+                elif any(inp.requires_grad for inp in inputs):
                     # Normal Behavior
                     jaxargs = tree_t2j(inputs)
                     ctx.fun_vjp = jax.vjp(fn, *jaxargs)[1]
