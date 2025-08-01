@@ -41,30 +41,82 @@ def jax2torch(fn):
     @wraps(fn)
     def inner(*args, **kwargs):
         class JaxFun(torch.autograd.Function):
+            generate_vmap_rule = True
+
             @staticmethod
             def forward(*args):
+                # Vmap behavior
+                # TODO: Make General
+                if torch._C._functorch.is_batchedtensor(args[0]):
+                    level = torch._C._functorch.maybe_get_level(args[0])
+                    bdim = torch._C._functorch.maybe_get_bdim(args[0])
+                    unwrap_args = [torch._C._functorch.get_unwrapped(arg) for arg in args]
+                    y_ = jax.vmap(fn)(*tree_t2j(unwrap_args))
+                    ret_unwrap = tree_j2t(y_)
+                    return torch._C._functorch._add_batch_dim(ret_unwrap, bdim, level)
+
+                # Normal Behavior
                 args = tree_t2j(args)
-                y_, _ = jax.vjp(fn, *args)
+                y_ = fn(*args)
+                #y_, _ = jax.vjp(fn, *args)
                 return tree_j2t(y_)
 
             @staticmethod
-            def setup_context(ctx, inputs, _):
-                jaxargs = tree_t2j(inputs)
-                _, ctx.fun_vjp = jax.vjp(fn, *jaxargs)
-                ctx.batch_vjp = jax.vmap(ctx.fun_vjp)
+            def setup_context(ctx, inputs, outputs):
+                # Vmap behavior
+                # TODO: Make General
+                if torch._C._functorch.is_batchedtensor(inputs[0]):
+                    level = torch._C._functorch.maybe_get_level(inputs[0])
+                    bdim = torch._C._functorch.maybe_get_bdim(inputs[0])
+                    unwrap_args = [torch._C._functorch.get_unwrapped(inp) for inp in inputs]
+                    jaxargs = tree_t2j(unwrap_args)
+                    ctx.fun_vjp = jax.vjp(jax.vmap(fn), *jaxargs)[1]
+                    ctx.batch_vjp = ctx.fun_vjp
+                    ctx.batch_size = jaxargs[0].shape[0]
+                else:
+                    # Normal Behavior
+                    jaxargs = tree_t2j(inputs)
+                    ctx.fun_vjp = jax.vjp(fn, *jaxargs)[1]
+                    ctx.batch_vjp = jax.vmap(ctx.fun_vjp)
+                    ctx.batch_size = 0
 
             @staticmethod
             def backward(ctx, *grad_args):
                 # Check for batched tensor and unwrap
                 batch_args = grad_args if len(grad_args) > 1 else grad_args[0]
+                # Vmap operation
                 if torch._C._functorch.is_batchedtensor(batch_args):
                     level = torch._C._functorch.maybe_get_level(batch_args)
                     bdim = torch._C._functorch.maybe_get_bdim(batch_args)
                     unwrap_args = torch._C._functorch.get_unwrapped(batch_args)
-                    grads = ctx.batch_vjp(tree_t2j(unwrap_args))
-                    grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
-                    ret_unwrap = tree_j2t(grads)
-                    return tuple(torch._C._functorch._add_batch_dim(ret, bdim, level) for ret in ret_unwrap)
+                    batch_vjp = ctx.batch_vjp
+                    for _ in range(level-1):
+                        unwrap_args = torch._C._functorch.get_unwrapped(unwrap_args)
+                        batch_vjp = jax.vmap(batch_vjp)
+                    jaxargs = tree_t2j(unwrap_args)
+                    ## TODO: HACK handle independent batch dimension
+                    if ctx.batch_size > 0 and level > 1 and jaxargs.shape[0] % ctx.batch_size == 0:
+                        newargs = jnp.transpose(jnp.diagonal(jaxargs.reshape((ctx.batch_size, -1) + jaxargs.shape[1:]), axis1=0, axis2=2), axes=(0, 2, 1))
+                        grads_new = batch_vjp(newargs)
+                        grads_new = tree_j2t(grads_new)
+                        # Reshape as input
+                        rets_new = []
+                        for grad in grads_new:
+                            if grad.ndim == 4:
+                                ret_trans = grad.transpose(1, 2).transpose(2, 3)
+                            elif grad.ndim == 3:
+                                ret_trans = grad.transpose(1, 2)
+                            rets_new.append(torch.diag_embed(ret_trans, dim1=0, dim2=2).reshape((jaxargs.shape[0],) + grad.shape[1:]))
+                        rets = rets_new
+                    ## END HACK
+                    else:
+                        grads = batch_vjp(jaxargs)
+                        grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
+                        rets = tree_j2t(grads)
+
+                    for lvl in range(level):
+                        rets = tuple(torch._C._functorch._add_batch_dim(ret, bdim, lvl+1) for ret in rets)
+                    return rets
                 # Normal operation
                 grad_args = tree_t2j(grad_args) if len(grad_args) > 1 else t2j(grad_args[0])
                 grads = ctx.fun_vjp(grad_args)
