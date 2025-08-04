@@ -50,7 +50,12 @@ def jax2torch(fn):
                 if torch._C._functorch.is_batchedtensor(args[0]):
                     level = torch._C._functorch.maybe_get_level(args[0])
                     bdim = torch._C._functorch.maybe_get_bdim(args[0])
-                    unwrap_args = [torch._C._functorch.get_unwrapped(arg) for arg in args]
+                    unwrap_args = []
+                    for arg in args:
+                        if torch._C._functorch.is_batchedtensor(arg):
+                            unwrap_args.append(torch._C._functorch.get_unwrapped(arg))
+                        else:
+                            unwrap_args.append(arg)
                     y_ = jax.vmap(fn)(*tree_t2j(unwrap_args))
                     ret_unwrap = tree_j2t(y_)
                     return torch._C._functorch._add_batch_dim(ret_unwrap, bdim, level)
@@ -68,7 +73,13 @@ def jax2torch(fn):
                 if torch._C._functorch.is_batchedtensor(inputs[0]):
                     level = torch._C._functorch.maybe_get_level(inputs[0])
                     bdim = torch._C._functorch.maybe_get_bdim(inputs[0])
-                    unwrap_args = [torch._C._functorch.get_unwrapped(inp) for inp in inputs]
+                    #unwrap_args = [torch._C._functorch.get_unwrapped(inp) for inp in inputs]
+                    unwrap_args = []
+                    for arg in inputs:
+                        if torch._C._functorch.is_batchedtensor(arg):
+                            unwrap_args.append(torch._C._functorch.get_unwrapped(arg))
+                        else:
+                            unwrap_args.append(arg)
                     jaxargs = tree_t2j(unwrap_args)
                     ctx.fun_vjp = jax.vjp(jax.vmap(fn), *jaxargs)[1]
                     ctx.batch_vjp = ctx.fun_vjp
