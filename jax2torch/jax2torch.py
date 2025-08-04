@@ -107,6 +107,7 @@ def jax2torch(fn):
                     jaxargs = tree_t2j(unwrap_args)
                     ## TODO: HACK handle independent batch dimension
                     ## 39 == self.space.n_x + n_outs
+                    """
                     if ctx.batch_size > 0 and level > 1 and jaxargs.shape[0] % ctx.batch_size == 0 and jaxargs.shape[0] // ctx.batch_size == 39:
                         newargs = jnp.transpose(jnp.diagonal(jaxargs.reshape((ctx.batch_size, -1) + jaxargs.shape[1:]), axis1=0, axis2=2), axes=(0, 2, 1))
                         grads_new = batch_vjp(newargs)
@@ -122,9 +123,10 @@ def jax2torch(fn):
                         rets = rets_new
                     ## END HACK
                     else:
-                        grads = batch_vjp(jaxargs)
-                        grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
-                        rets = tree_j2t(grads)
+                    """
+                    grads = batch_vjp(jaxargs)
+                    grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
+                    rets = tree_j2t(grads)
 
                     for lvl in range(level):
                         rets = tuple(torch._C._functorch._add_batch_dim(ret, bdim, lvl+1) for ret in rets)
