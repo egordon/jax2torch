@@ -13,16 +13,21 @@ from functools import wraps
 
 # TODO: figure out how to use UnTypedStorage
 import warnings
-warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
+
+warnings.filterwarnings(
+    "ignore", category=UserWarning, message="TypedStorage is deprecated"
+)
+
 
 def j2t(x_jax):
     # to_dlpack is now deprecated, can pass in directly
     x_torch = torch_dlpack.from_dlpack(x_jax)
     return x_torch
 
+
 def t2j(x_torch):
     # Needs to be detached before DLPack
-    x_torch = x_torch.detach().contiguous() # https://github.com/google/jax/issues/8082
+    x_torch = x_torch.detach().contiguous()  # https://github.com/google/jax/issues/8082
     # Unwrap Grad-Tracking Tensor: https://github.com/pytorch/pytorch/issues/91810
     if torch._C._functorch.is_gradtrackingtensor(x_torch):
         x_unwrap = torch._C._functorch.get_unwrapped(x_torch)
@@ -31,11 +36,14 @@ def t2j(x_torch):
         x_jax = jax_dlpack.from_dlpack(x_torch)
     return x_jax
 
+
 def tree_t2j(x_torch):
     return tree_map(lambda t: t2j(t) if isinstance(t, torch.Tensor) else t, x_torch)
 
+
 def tree_j2t(x_jax):
     return tree_map(lambda t: j2t(t) if isinstance(t, jnp.ndarray) else t, x_jax)
+
 
 def jax2torch(fn):
     @wraps(fn)
@@ -63,7 +71,7 @@ def jax2torch(fn):
                 # Normal Behavior
                 args = tree_t2j(args)
                 y_ = fn(*args)
-                #y_, _ = jax.vjp(fn, *args)
+                # y_, _ = jax.vjp(fn, *args)
                 return tree_j2t(y_)
 
             @staticmethod
@@ -73,7 +81,7 @@ def jax2torch(fn):
                 if torch._C._functorch.is_batchedtensor(inputs[0]):
                     level = torch._C._functorch.maybe_get_level(inputs[0])
                     bdim = torch._C._functorch.maybe_get_bdim(inputs[0])
-                    #unwrap_args = [torch._C._functorch.get_unwrapped(inp) for inp in inputs]
+                    # unwrap_args = [torch._C._functorch.get_unwrapped(inp) for inp in inputs]
                     unwrap_args = []
                     for arg in inputs:
                         if torch._C._functorch.is_batchedtensor(arg):
@@ -101,7 +109,7 @@ def jax2torch(fn):
                     bdim = torch._C._functorch.maybe_get_bdim(batch_args)
                     unwrap_args = torch._C._functorch.get_unwrapped(batch_args)
                     batch_vjp = ctx.batch_vjp
-                    for _ in range(level-1):
+                    for _ in range(level - 1):
                         unwrap_args = torch._C._functorch.get_unwrapped(unwrap_args)
                         batch_vjp = jax.vmap(batch_vjp)
                     jaxargs = tree_t2j(unwrap_args)
@@ -125,20 +133,30 @@ def jax2torch(fn):
                     else:
                     """
                     grads = batch_vjp(jaxargs)
-                    grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
+                    grads = tuple(
+                        map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads)
+                    )
                     rets = tree_j2t(grads)
 
                     for lvl in range(level):
-                        rets = tuple(torch._C._functorch._add_batch_dim(ret, bdim, lvl+1) for ret in rets)
+                        rets = tuple(
+                            torch._C._functorch._add_batch_dim(ret, bdim, lvl + 1)
+                            for ret in rets
+                        )
                     return rets
                 # Normal operation
-                grad_args = tree_t2j(grad_args) if len(grad_args) > 1 else t2j(grad_args[0])
+                grad_args = (
+                    tree_t2j(grad_args) if len(grad_args) > 1 else t2j(grad_args[0])
+                )
                 grads = ctx.fun_vjp(grad_args)
-                grads = tuple(map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads))
+                grads = tuple(
+                    map(lambda t: t if isinstance(t, jnp.ndarray) else None, grads)
+                )
                 return tree_j2t(grads)
 
         sig = signature(fn)
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
         return JaxFun.apply(*bound.arguments.values())
+
     return inner
