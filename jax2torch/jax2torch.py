@@ -69,8 +69,8 @@ def jax2torch(fn):
                     return torch._C._functorch._add_batch_dim(ret_unwrap, bdim, level)
 
                 # Normal Behavior
-                args = tree_t2j(args)
-                y_ = fn(*args)
+                jax_args = tree_t2j(args)
+                y_ = fn(*jax_args)
                 # y_, _ = jax.vjp(fn, *args)
                 return tree_j2t(y_)
 
